@@ -74,6 +74,9 @@ async function runJob(job: Job) {
             templateVariables: job.data.templateVariables,
             options: options || {},
             crawl_options: jobType === JOB_TYPE_CRAWL ? job.data.options : null,
+            // Set original_url to initial URL for proxy rule matching
+            // This ensures proxy rules can match correctly for both initial and subsequent requests
+            original_url: job.data.url,
         }
     );
     // Seed enqueued counter for crawl jobs (the initial URL itself)

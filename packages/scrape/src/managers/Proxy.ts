@@ -283,7 +283,8 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
                 const combined = [matchedProxy, ...fallbackProxies];
                 const selectedProxy = combined[this.nextCustomUrlIndex++ % combined.length] ?? null;
                 if (selectedProxy) {
-                    this.log.info(`Using merged proxy list (rule + fallback): ${selectedProxy} for URL: ${options.request.url}`);
+                    const originalUrl = (options.request.userData as any)?.original_url;
+                    this.log.info(`[PROXY] URL: ${options.request.url}${originalUrl && originalUrl !== options.request.url ? ` (original: ${originalUrl})` : ''} → Using merged proxy (rule + fallback): ${selectedProxy}`);
                 }
                 return {
                     proxyUrl: selectedProxy,
@@ -295,7 +296,7 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
             const allProxyUrls = this.tieredProxyUrls.flat().filter((url): url is string | null => url !== undefined);
             const selectedProxy = allProxyUrls[this.nextCustomUrlIndex++ % allProxyUrls.length] ?? null;
             if (selectedProxy) {
-                this.log.info(`Using tiered proxy: ${selectedProxy}`);
+                this.log.info(`[PROXY] → Using tiered proxy (fallback): ${selectedProxy}`);
             }
             return {
                 proxyUrl: selectedProxy,
@@ -314,10 +315,10 @@ export class ProxyConfiguration extends CrawleeProxyConfiguration {
         }
 
         const selectedProxy = proxyTier[this.nextCustomUrlIndex++ % proxyTier.length] ?? null;
-        if (selectedProxy && options?.request?.url) {
-            this.log.info(`Using tiered proxy from tier ${tierPrediction}: ${selectedProxy} for URL: ${options.request.url}`);
-        } else if (selectedProxy) {
-            this.log.info(`Using tiered proxy from tier ${tierPrediction}: ${selectedProxy}`);
+        if (selectedProxy) {
+            const requestUrl = options?.request?.url || 'unknown';
+            const originalUrl = options?.request?.userData ? (options.request.userData as any)?.original_url : undefined;
+            this.log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using tiered proxy from tier ${tierPrediction}: ${selectedProxy}`);
         }
 
         return {
@@ -565,23 +566,32 @@ function findProxyForUrl(requestUrl: string): string | null {
 
 const proxyConfiguration = new ProxyConfiguration({
     newUrlFunction: (_sessionId: string | number, options?: { request?: Request }): string | null => {
+        const requestUrl = options?.request?.url || 'unknown';
+        const originalUrl = (options?.request?.userData as any)?.original_url;
+        const matchUrl = originalUrl || requestUrl;
+
         // First priority: explicit proxy from request userData
         if (options?.request?.userData?.options?.proxy) {
-            log.info(`Using proxy from request userData: ${options?.request?.userData?.options?.proxy}`);
-            return options?.request?.userData?.options?.proxy;
+            const proxy = options.request.userData.options.proxy;
+            log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Using explicit proxy from userData: ${proxy}`);
+            return proxy;
         }
 
         // Next: proxy rule matching should use original_url first if available
-        const matchUrl = (options?.request?.userData as any)?.original_url || options?.request?.url;
         if (matchUrl) {
             const matched = findProxyForUrl(matchUrl);
             if (matched) {
-                log.info(`Found proxy for URL ${matchUrl}: ${matched} By matching a rule.`);
+                log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → Matched proxy rule: ${matched}`);
                 return matched;
             }
         }
 
         // Fallback to ANYCRAWL_PROXY_URL (handled by tieredProxyUrls)
+        if (process.env.ANYCRAWL_PROXY_URL) {
+            log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → No rule matched, will use ANYCRAWL_PROXY_URL fallback`);
+        } else {
+            log.info(`[PROXY] URL: ${requestUrl}${originalUrl && originalUrl !== requestUrl ? ` (original: ${originalUrl})` : ''} → No proxy configured (no rule matched, no ANYCRAWL_PROXY_URL)`);
+        }
         return null;
     },
     // Fallback proxy configuration from ANYCRAWL_PROXY_URL environment variable

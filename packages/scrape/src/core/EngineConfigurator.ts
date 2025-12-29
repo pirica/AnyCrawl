@@ -501,6 +501,14 @@ export class EngineConfigurator {
             // Check error type and determine retry strategy
             const errorMessage = error.message || '';
 
+            // Handle 403 errors - allow retry with session rotation (up to 3 times)
+            // The refresh logic in requestHandler will attempt to recover before retry
+            if (errorMessage.includes('blocked status code: 403') || errorMessage.includes('403')) {
+                log.info('403 error detected, waiting 10 seconds before retry with session rotation');
+                log.debug('403 error: waiting completed, allowing retry with session rotation (refresh will be attempted in requestHandler)');
+                return true; // Retry with new session (up to maxSessionRotations = 3)
+            }
+
             // Proxy-related errors that might be temporary
             const temporaryProxyErrors = [
                 'ERR_PROXY_CONNECTION_FAILED',
