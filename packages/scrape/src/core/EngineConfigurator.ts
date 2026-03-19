@@ -178,7 +178,7 @@ export class EngineConfigurator {
             }
         };
 
-        const resourceBlockingHook = async ({ page }: any) => {
+        const resourceBlockingHook = async ({ page, request }: any) => {
             if (!page || (page as any).__anycrawlResourceBlockingApplied) return;
             (page as any).__anycrawlResourceBlockingApplied = true;
 
@@ -193,18 +193,36 @@ export class EngineConfigurator {
             if (!cdp) return;
             (page as any).__anycrawlCdpSession = cdp;
 
+            const formats: string[] = request?.userData?.options?.formats || [];
+            const needsScreenshot = formats.some(
+                (f: string) => f === "screenshot" || f === "screenshot@fullPage",
+            );
+
             try {
                 await cdp.send("Network.enable");
                 await cdp.send("Network.setBlockedURLs", {
                     urls: AD_DOMAINS.map((d: string) => `*${d}*`),
                 });
-                await cdp.send("Fetch.enable", {
-                    patterns: [
-                        { resourceType: "Image", requestStage: "Request" },
-                        { resourceType: "Media", requestStage: "Request" },
-                        { resourceType: "Font", requestStage: "Request" },
-                    ],
-                });
+
+                if (needsScreenshot) {
+                    // Only block media (video/audio); let images and fonts load
+                    // normally so the screenshot captures a fully rendered page.
+                    await cdp.send("Fetch.enable", {
+                        patterns: [
+                            { resourceType: "Media", requestStage: "Request" },
+                        ],
+                    });
+                    log.debug(`[resourceBlockingHook] screenshot mode: only blocking media for ${engineType}`);
+                } else {
+                    await cdp.send("Fetch.enable", {
+                        patterns: [
+                            { resourceType: "Image", requestStage: "Request" },
+                            { resourceType: "Media", requestStage: "Request" },
+                            { resourceType: "Font", requestStage: "Request" },
+                        ],
+                    });
+                }
+
                 cdp.on("Fetch.requestPaused", async (e: any) => {
                     try {
                         log.debug(`[resourceBlocking] Blocked ${e.resourceType}: ${e.request?.url?.substring(0, 100)}`);

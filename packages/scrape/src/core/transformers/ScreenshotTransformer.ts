@@ -2,6 +2,7 @@ import { log } from "@anycrawl/libs";
 import { CrawlingContext } from "../../engines/Base.js";
 import { Utils } from "../../Utils.js";
 import { s3 } from "@anycrawl/libs";
+import { waitForScreenshotReady } from "../../utils/screenshotReady.js";
 
 export class ScreenshotTransformer {
     private s3: typeof s3;
@@ -101,74 +102,93 @@ export class ScreenshotTransformer {
         return screenshot;
     }
 
+    /**
+     * Capture screenshot via CDP Page.captureScreenshot (instant, no lifecycle wait).
+     * Falls back to page.screenshot() if CDP session is unavailable.
+     */
+    private async captureViaCDP(
+        page: any,
+        fullPage: boolean,
+    ): Promise<Buffer> {
+        const cdp = (page as any).__anycrawlCdpSession;
+        if (!cdp) {
+            return await page.screenshot(
+                fullPage
+                    ? { fullPage: true, quality: 100, type: 'jpeg' }
+                    : { quality: 100, type: 'jpeg' },
+            );
+        }
+
+        try {
+            if (fullPage) {
+                const metrics = await cdp.send('Page.getLayoutMetrics');
+                const contentWidth = Math.ceil(metrics.contentSize.width);
+                const contentHeight = Math.ceil(metrics.contentSize.height);
+
+                await cdp.send('Emulation.setDeviceMetricsOverride', {
+                    width: contentWidth,
+                    height: contentHeight,
+                    deviceScaleFactor: 1,
+                    mobile: false,
+                });
+
+                const { data } = await cdp.send('Page.captureScreenshot', {
+                    format: 'jpeg',
+                    quality: 100,
+                    captureBeyondViewport: true,
+                });
+
+                await cdp.send('Emulation.clearDeviceMetricsOverride');
+                return Buffer.from(data, 'base64');
+            }
+
+            const { data } = await cdp.send('Page.captureScreenshot', {
+                format: 'jpeg',
+                quality: 100,
+            });
+            return Buffer.from(data, 'base64');
+        } catch (e) {
+            log.warning(`[Screenshot] CDP capture failed: ${e instanceof Error ? e.message : String(e)}, falling back to page.screenshot()`);
+            return await page.screenshot(
+                fullPage
+                    ? { fullPage: true, quality: 100, type: 'jpeg' }
+                    : { quality: 100, type: 'jpeg' },
+            );
+        }
+    }
+
     public async captureAndStoreScreenshot(context: CrawlingContext, page: any, formats: string[]): Promise<string | void> {
         try {
             const jobId = context.request.userData["jobId"];
-            // Use request.id (preferred) or uniqueKey to ensure uniqueness per enqueued request
             const crypto = await import('crypto');
             const reqHash = crypto.createHash('md5').update(context.request.uniqueKey).digest('hex').substring(0, 8);
 
             let fileName: string | undefined;
-            let screenshotOptions: any;
+            let fullPage = false;
 
             if (formats.includes("screenshot@fullPage")) {
                 fileName = `screenshot-fullPage-${jobId}-${reqHash}.jpeg`;
-                screenshotOptions = { fullPage: true, quality: 100, type: 'jpeg' };
+                fullPage = true;
             } else if (formats.includes("screenshot")) {
                 fileName = `screenshot-${jobId}-${reqHash}.jpeg`;
-                screenshotOptions = { quality: 100, type: 'jpeg' };
             } else {
                 return;
             }
 
-            // Phase 2: unblock media resources for screenshot capture
-            const cdp = (page as any).__anycrawlCdpSession;
-            if (cdp) {
-                try {
-                    await cdp.send("Fetch.disable");
-                    await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
-                    await page.evaluate(() => {
-                        const imgs = document.querySelectorAll("img[src]");
-                        imgs.forEach((el) => {
-                            const img = el as HTMLImageElement;
-                            if (img.complete && img.naturalWidth > 0) return;
-                            const s = img.getAttribute("src")!;
-                            img.removeAttribute("src");
-                            const _reflow = img.offsetHeight;
-                            img.setAttribute("src", s);
-                        });
-                        const sources = document.querySelectorAll("picture source[srcset]");
-                        sources.forEach((el) => {
-                            const s = el.getAttribute("srcset")!;
-                            el.removeAttribute("srcset");
-                            el.setAttribute("srcset", s);
-                        });
-                    });
-                    await page.evaluate(() => new Promise<void>(resolve => {
-                        const check = () => {
-                            if ([...document.getElementsByTagName("img")].every((i: HTMLImageElement) => i.complete)) {
-                                resolve();
-                                return;
-                            }
-                            setTimeout(check, 100);
-                        };
-                        check();
-                        setTimeout(resolve, 5000);
-                    }));
-                    await cdp.send("Network.setCacheDisabled", { cacheDisabled: false });
-                } catch {
-                    // proceed with screenshot even if media unblock fails
-                }
+            try {
+                await waitForScreenshotReady(page, context.request.url, { fullPage });
+            } catch {
+                // proceed with screenshot even if readiness check fails
             }
 
-            const screenshot = await page.screenshot(screenshotOptions);
+            const screenshot = await this.captureViaCDP(page, fullPage);
             log.debug(`[Screenshot] Captured screenshot for ${context.request.url} -> ${fileName}`);
 
             if (process.env.ANYCRAWL_STORAGE === 's3') {
                 await this.s3.uploadImage(fileName!, screenshot);
             } else {
                 const keyValueStore = await Utils.getInstance().getKeyValueStore();
-                await keyValueStore.setValue(fileName!, screenshot, { contentType: `image/${screenshotOptions.type}` });
+                await keyValueStore.setValue(fileName!, screenshot, { contentType: 'image/jpeg' });
             }
             log.info(`[Screenshot] Saved screenshot: ${fileName} for URL: ${context.request.url}`);
             return fileName;
