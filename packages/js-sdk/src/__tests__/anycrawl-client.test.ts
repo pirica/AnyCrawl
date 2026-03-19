@@ -1218,7 +1218,7 @@ describe('AnyCrawlClient', () => {
     });
 
     describe('scrape engine default', () => {
-        it('should use playwright when engine is omitted', async () => {
+        it('should use auto when engine is omitted', async () => {
             mockAxiosInstance.post.mockResolvedValueOnce({
                 data: {
                     success: true,
@@ -1238,7 +1238,7 @@ describe('AnyCrawlClient', () => {
             await client.scrape({ url: 'https://example.com', engine: undefined as any });
             expect(mockAxiosInstance.post).toHaveBeenCalledWith(
                 '/v1/scrape',
-                expect.objectContaining({ engine: 'playwright' })
+                expect.objectContaining({ engine: 'auto' })
             );
         });
     });
